@@ -1,0 +1,892 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "provenance": [],
+      "include_colab_link": true
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    }
+  },
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/carinunez/Tareas_generativos/blob/main/Tarea_3_Borrador_cuasifinal\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "xASaxhDIqd3D"
+      },
+      "outputs": [],
+      "source": [
+        "import h5py\n",
+        "import numpy as np\n",
+        "import matplotlib.pyplot as plt\n",
+        "import torch\n",
+        "import torch.nn as nn\n",
+        "import torch.optim as optim\n",
+        "import torch.nn.functional as F\n",
+        "from torch.utils.data import Dataset, DataLoader\n",
+        "from tqdm.notebook import tqdm\n",
+        "\n",
+        "DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "!gsutil -m cp gs://3d-shapes/3dshapes.h5 ."
+      ],
+      "metadata": {
+        "id": "5a-9IywjqlFS"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "f = h5py.File('3dshapes.h5', 'r')\n",
+        "print(\"Claves del archivo:\", list(f.keys()))\n",
+        "\n",
+        "# Forma de las imágenes,etiquetas y formato\n",
+        "print(\"Tamaño de las imágenes:\", f['images'].shape)\n",
+        "print(\"Tamaño de los labels:  \", f['labels'].shape)\n",
+        "print(type(f['labels']))"
+      ],
+      "metadata": {
+        "id": "bHHVLOvDqmQZ"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from torchvision import transforms\n",
+        "from PIL import Image\n",
+        "\n",
+        "transform = transforms.ToTensor()"
+      ],
+      "metadata": {
+        "id": "ORNoPQIwz61h"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "class Shapes3D(Dataset):\n",
+        "\n",
+        "    def __init__(self, filename, max_samples=None, seed=0):\n",
+        "        # nombre del archivo guardado\n",
+        "        self.filename = filename\n",
+        "        # se abre el archivo en el formato HDF5 para leer 'r'\n",
+        "        self.file = h5py.File(self.filename, 'r')\n",
+        "\n",
+        "        # se guardan las imágenes y etiquetas\n",
+        "        self._images = self.file['images']\n",
+        "        self._labels = self.file['labels']\n",
+        "\n",
+        "        # cantidad de imágenes en total\n",
+        "        self.total_samples = len(self._images)\n",
+        "\n",
+        "        # índices se sacan de forma aleatoria para tomar muestra\n",
+        "        # replace = False es que sean distintos\n",
+        "        if max_samples is not None:\n",
+        "            rng = np.random.default_rng(seed)  # generador random con semilla\n",
+        "            self.indices = rng.choice(self.total_samples, size=max_samples, replace=False)\n",
+        "        else:\n",
+        "            self.indices = np.arange(self.total_samples)\n",
+        "\n",
+        "        self.transform = transforms.ToTensor()\n",
+        "\n",
+        "    def __len__(self):\n",
+        "        return len(self.indices)  # cantidad de índices guardados\n",
+        "\n",
+        "    def __getitem__(self, n):\n",
+        "        i = self.indices[n]  # se busca el índice\n",
+        "        img = self._images[i]\n",
+        "        # capturamos la imagen y su etiqueta asociada\n",
+        "        img = Image.fromarray(img)\n",
+        "        img = self.transform(img)  # normalización pasa de (0,255) a (0,1)\n",
+        "        # img = np.clip(img, 0.0, 1.0)\n",
+        "\n",
+        "        # img = np.transpose(img, (2, 0, 1))  # cambia orden de ejes: alto, ancho, canales → canales, alto, ancho\n",
+        "        # img = torch.from_numpy(img).float()\n",
+        "        label = torch.from_numpy(self._labels[i]).float()\n",
+        "\n",
+        "        return img, label"
+      ],
+      "metadata": {
+        "id": "YxwtxXprq2jT"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "batch_size = 64\n",
+        "max_samples = 1000\n",
+        "\n",
+        "dataset = Shapes3D(filename='3dshapes.h5', max_samples=max_samples)\n",
+        "dataloader = DataLoader(dataset, batch_size, shuffle=True, num_workers=1, pin_memory=True)"
+      ],
+      "metadata": {
+        "id": "gbRLABw-2i_T"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Ver el primer batch\n",
+        "for images, labels in dataloader:\n",
+        "    print(\"Tamaño del batch de imágenes:\", images.shape)\n",
+        "    print(\"Tamaño del batch de labels:\", labels.shape)"
+      ],
+      "metadata": {
+        "id": "Yt4_9CU9q7XG"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "def show_images(imgs, ncols=None):\n",
+        "    imgs = imgs.permute(0, 2, 3, 1).detach().cpu()\n",
+        "    n_images = imgs.shape[0]\n",
+        "    ncols = ncols or int(n_images**0.5)\n",
+        "    nrows = -(-n_images // ncols)\n",
+        "\n",
+        "    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2, nrows * 2))\n",
+        "    for ax, img in zip(axes.flat, imgs):\n",
+        "        ax.imshow(img)\n",
+        "        ax.axis('off')\n",
+        "    for ax in axes.flat[n_images:]:\n",
+        "        ax.set_visible(False)\n",
+        "\n",
+        "    plt.tight_layout()\n",
+        "    plt.show()"
+      ],
+      "metadata": {
+        "id": "c2zOPtAcq9A5"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "imgs, labels = next(iter(dataloader))\n",
+        "assert imgs.shape == (batch_size, 3, 64, 64)\n",
+        "assert labels.shape == (batch_size, 6)\n",
+        "\n",
+        "show_images(imgs[:12], ncols=6)"
+      ],
+      "metadata": {
+        "id": "jKzreNnRq-S5"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "\n",
+        "class Encoder(nn.Module):\n",
+        "  def __init__(self, latent_dim):\n",
+        "    super().__init__()\n",
+        "\n",
+        "    self.conv = nn.Sequential(\n",
+        "            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),  # 64x64 -> 32x32\n",
+        "            nn.BatchNorm2d(32),\n",
+        "            nn.LeakyReLU(negative_slope=0.2), # activación suave\n",
+        "\n",
+        "            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # 32x32 -> 16x16\n",
+        "            nn.BatchNorm2d(64),\n",
+        "            nn.LeakyReLU(negative_slope=0.2),\n",
+        "\n",
+        "            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # 16x16 -> 8x8\n",
+        "            nn.BatchNorm2d(128),\n",
+        "            nn.LeakyReLU(negative_slope=0.2),\n",
+        "\n",
+        "            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),  # 8x8 -> 4x4\n",
+        "            nn.BatchNorm2d(256),\n",
+        "            nn.LeakyReLU(negative_slope=0.2)\n",
+        "        )\n",
+        "    # Arquitectura: 3 canales de 64x64 -> 32 canales de 32x32 ->\n",
+        "    #               64 canales de 16x16 -> 128 canales de 8x8\n",
+        "    self.flatten = nn.Flatten()\n",
+        "\n",
+        "    self.fc_mu = nn.Linear(256*4*4, latent_dim)\n",
+        "    self.fc_logvar = nn.Linear(256*4*4, latent_dim)\n",
+        "\n",
+        "  def forward(self, x):\n",
+        "    x = self.conv(x)\n",
+        "    x = self.flatten(x) # (N,256)\n",
+        "    mu = self.fc_mu(x)\n",
+        "    logvar = self.fc_logvar(x)\n",
+        "    return mu, logvar\n",
+        "\n",
+        "class Decoder(nn.Module):\n",
+        "  def __init__(self, latent_dim):\n",
+        "    super().__init__()\n",
+        "\n",
+        "    # Proyecta el vector latente a  un tensor de 128x8x8 para usarlo como entrada\n",
+        "    # de las capas conv\n",
+        "\n",
+        "    self.dec = nn.Sequential(\n",
+        "            nn.Linear(latent_dim, 256*4*4),  # proyectamos al tamaño original\n",
+        "            nn.LeakyReLU(negative_slope=0.2),\n",
+        "            nn.Unflatten(1, (256, 4, 4)),  # lo convertimos a forma de imagen (batch, C, H, W)\n",
+        "\n",
+        "            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),\n",
+        "            nn.BatchNorm2d(128),\n",
+        "            nn.LeakyReLU(negative_slope=0.2),\n",
+        "\n",
+        "            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),  # 8x8 -> 16x16\n",
+        "            nn.BatchNorm2d(64),\n",
+        "            nn.LeakyReLU(negative_slope=0.2),\n",
+        "\n",
+        "            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),  # 16x16 -> 32x32\n",
+        "            nn.BatchNorm2d(32),\n",
+        "            nn.LeakyReLU(negative_slope=0.2),\n",
+        "\n",
+        "            nn.ConvTranspose2d(32, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # 32x32 -> 64x64\n",
+        "            nn.Sigmoid()  # para que la salida quede en [0,1]\n",
+        "        )\n",
+        "\n",
+        "\n",
+        "  def forward(self, z):\n",
+        "    return self.dec(z)\n",
+        "\n",
+        "class VAE(nn.Module):\n",
+        "\n",
+        "    def __init__(self, latent_dim):\n",
+        "        super().__init__()\n",
+        "        self.latent_dim = latent_dim\n",
+        "\n",
+        "        self.encoder = Encoder(latent_dim)\n",
+        "        self.decoder = Decoder(latent_dim)\n",
+        "\n",
+        "    def reparameterize(self, mu, logvar):\n",
+        "      # reparametrizamos z para que sea calculable\n",
+        "\n",
+        "        std = torch.exp(0.5 * logvar)\n",
+        "        ep_noise = torch.randn_like(mu) # tensor de numeros aleatorios ~N(0,1) con dim igual a mu\n",
+        "        return mu + ep_noise * std # Agregamos ruido a la Gaussiana\n",
+        "\n",
+        "\n",
+        "    def forward(self, x):\n",
+        "        mu, logvar = self.encoder(x)\n",
+        "\n",
+        "        z_noise = self.reparameterize(mu, logvar)\n",
+        "        x_recon = self.decoder(z_noise)\n",
+        "        return (mu, logvar), x_recon # x_reconstruido\n",
+        "\n",
+        "\n",
+        "def train_vae(model, dataloader, optimizer, reconstruction_metric, beta, n_epochs):\n",
+        "\n",
+        "    model = model.to(DEVICE)\n",
+        "    model.train()\n",
+        "\n",
+        "    total_steps = n_epochs * len(dataloader)\n",
+        "    global_bar = tqdm(total=total_steps, desc='Entrenamiento', position=0)\n",
+        "\n",
+        "    reconstruction_log, prior_matching_log = [], []\n",
+        "\n",
+        "    try:\n",
+        "        for epoch in range(1, n_epochs + 1):\n",
+        "            total_reconstruction, total_prior_matching = 0, 0\n",
+        "\n",
+        "            for x, _ in dataloader:\n",
+        "                x = x.to(DEVICE)\n",
+        "\n",
+        "                # Entrenamiento -----------------------------------------------\n",
+        "                # El codigo debe permitir usar istintas métricas de recontrucción\n",
+        "                # Agregar parámetro beta -> beta-VAE\n",
+        "                optimizer.zero_grad()\n",
+        "\n",
+        "                # ELBO:\n",
+        "                (encoder_mu, encoder_logvar), x_recon = model(x)\n",
+        "                encoder_var = encoder_logvar.exp()\n",
+        "\n",
+        "\n",
+        "                prior_matching = -0.5 * torch.sum(1 + encoder_logvar -\n",
+        "                                                 encoder_mu.pow(2) -\n",
+        "                                                 encoder_var , dim=1\n",
+        "                                                  )\n",
+        "                # prior_matching = 1/2 * (encoder_mu.norm(dim=-1) ** 2 + \\\n",
+        "                #                         encoder_var.norm(dim=-1) ** 2) - \\\n",
+        "                #                         encoder_logvar.sum(dim=-1)\n",
+        "\n",
+        "                prior_matching = prior_matching.mean()\n",
+        "\n",
+        "\n",
+        "                reconstruction = reconstruction_metric(x_recon, x)\n",
+        "\n",
+        "                loss = reconstruction + beta * prior_matching\n",
+        "                # loss = loss.mean()\n",
+        "                # print('loss ', loss, ' prior', prior_matching, 'recont ', reconstruction)\n",
+        "\n",
+        "                loss.backward()\n",
+        "                optimizer.step()\n",
+        "\n",
+        "                # Registro -----------------------------------------------------\n",
+        "\n",
+        "                total_reconstruction += reconstruction.item()\n",
+        "                total_prior_matching += prior_matching.item()\n",
+        "\n",
+        "                global_bar.update(1)\n",
+        "                global_bar.set_postfix({\n",
+        "                    'época': epoch,\n",
+        "                    'reconstrucción': total_reconstruction / len(dataloader.dataset),\n",
+        "                    'prior matching': total_prior_matching / len(dataloader.dataset)\n",
+        "                })\n",
+        "\n",
+        "            N = len(dataloader.dataset)\n",
+        "            reconstruction_log.append(total_reconstruction / N)\n",
+        "            prior_matching_log.append(total_prior_matching / N)\n",
+        "\n",
+        "    except KeyboardInterrupt:\n",
+        "        print('Entrenamiento interrumpido.')\n",
+        "\n",
+        "    finally:\n",
+        "        global_bar.close()\n",
+        "\n",
+        "        # Gráfico --------------------------------------------------------------\n",
+        "\n",
+        "        fig, ax1 = plt.subplots(figsize=(10, 4))\n",
+        "\n",
+        "        ax1.set_xlabel('Época')\n",
+        "        ax1.set_ylabel('', color='red')\n",
+        "        l1, = ax1.plot(reconstruction_log, label='Término de reconstrucción', color='red')\n",
+        "        ax1.tick_params(axis='y', labelcolor='red')\n",
+        "        ax1.set_ylabel('Escala término de reconstrucción')\n",
+        "\n",
+        "        ax2 = ax1.twinx()\n",
+        "        ax2.set_ylabel('', color='blue')\n",
+        "        l2, = ax2.plot(prior_matching_log, label='Prior matching', color='blue')\n",
+        "        ax2.tick_params(axis='y', labelcolor='blue')\n",
+        "        ax2.set_ylabel('Escala prior matching')\n",
+        "\n",
+        "        lines = [l1, l2]\n",
+        "        labels = [line.get_label() for line in lines]\n",
+        "        ax1.legend(lines, labels)\n",
+        "\n",
+        "        plt.title('Dinámica de entrenamiento')\n",
+        "        fig.tight_layout()\n",
+        "        plt.show()\n"
+      ],
+      "metadata": {
+        "id": "9YdH8oeArHgR"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "def reconstruction(x, model):\n",
+        "  z_mean, z_logvar = model.encoder(x)\n",
+        "\n",
+        "  z = z_mean + torch.exp(0.5*z_logvar) * torch.randn_like(z_mean)\n",
+        "  x_mean = model.decoder(z)\n",
+        "  return x_mean"
+      ],
+      "metadata": {
+        "id": "gI40wgEowen_"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "imgs, _ = next(iter(dataloader))\n",
+        "x_original = imgs[:6].to(DEVICE)"
+      ],
+      "metadata": {
+        "id": "Ps2hSnXU2rPl"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "latent_dim = 64\n",
+        "reconstruction_metric = nn.BCELoss(reduction='sum')\n",
+        "beta = 4.5\n",
+        "n_epochs = 60\n",
+        "model = VAE(latent_dim)\n",
+        "optimizer = torch.optim.Adam(model.parameters())#, lr=1e-4)\n",
+        "train_vae(model, dataloader, optimizer, reconstruction_metric, beta, n_epochs)"
+      ],
+      "metadata": {
+        "collapsed": true,
+        "id": "w40vF1EEswgr"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Loop de entrenamiento\n",
+        "\n",
+        "Como se vio en clases, la ELBO de un VAE está compuesta por un término de reconstrucción y un término regularizador llamado prior matching:\n",
+        "\n",
+        "\\begin{equation}\n",
+        "\\operatorname{ELBO}(x):=\\mathbb{E}_{q_\\phi(z|x)}\\left[\\log p_\\theta(x|z)\\right] - \\operatorname{{D}_{KL}}\\left(q_\\phi(z|x)\\| p_\\theta(z)\\right)\n",
+        "\\end{equation}\n",
+        "\n",
+        "- ¿Qué diferencia esta función objetivo de la función objetivo usada en un autoencoder clásico? Dé una interpretación para ambos términos de la ELBO e indique cómo influyen en el entrenamiento de un VAE.\n",
+        "> **Respuesta:**\n",
+        "Primero que nada es necesario explicar de que la fórmula de autoencoder clásico no posee un término asociado a la probabilidad, en cambio busca a través de la pérdida el minimizar el error de reconstrucción solamente, sin que el espacio latente z este restringido, por ejemplo que tenga que seguir un supuesto en particular por ejemplo alguna distribución, solo fuerza bruta utilizando principalmente la siguiente métrica MSE\n",
+        "\n",
+        "$$\n",
+        "\\mathcal{L}_{AE}(x) = \\frac{1}{N} \\sum_{i=1}^{N} (x_i - \\hat{x}_i)^2\n",
+        "$$\n",
+        "\n",
+        "Mientras que la ELBO posee dos terminos\n",
+        "\n",
+        "$$\n",
+        "\\text{ELBO}(x) = \\mathbb{E}_{q_\\phi(z|x)} [\\log p_\\theta(x|z)] - D_{KL}(q_\\phi(z|x) \\| p(z))\n",
+        "$$\n",
+        "Donde el primer término sirve para forzar que la reconstrucción se parezca lo más posible a los datos originales, para que eso pase el espacio latente debe ccodificar de buena forma las variables latentes, osea la info importante para identificar las caracteristicas y reconstruir bien a través del muestreo.\n",
+        "\n",
+        "Pero el segundo término, osea la divergencia KL sirve para que  la distribución latente aprendida sea parecida a un espacio latente que se conoce, para eso asumimos en general de que el espacio latente z, viene de una normal con media 0 y la matriz identidad\n",
+        "\n",
+        "Al tener los dos terminos, se puede reconstruir de forma adecuada y a su vez también poder samplear de una distribución conocida, porque la divergencia KL sirve para hacer regularizar lo que aprende el conder con la función de distribución del espacio latente\n",
+        "\n",
+        "Ojo,hay que recordar que lo importante de la KL es que es una medida de diferencia entre dos funciones, es decir entre la función que aprende el encoder, osea q(z/x)  y el espacio latente prior de los datos p(z)\n",
+        "\n",
+        "- La forma final del término de reconstrucción $\\mathbb{E}_{q_\\phi(z|x)}\\left[\\log p_\\theta(x|z)\\right]$ depende de la distribución $p_\\theta(x|z)$ elegida para el decoder. Indique qué distribución se asume implícitamente si el término de reconstrucción se calcula\n",
+        "  - Usando MSE (i.e., como la distancia $L^1$ entre la reconstrucción y la muestra original).\n",
+        "  > **Respuesta:**\n",
+        "\n",
+        "Para MSE se asume una distribución de porbabilidad normal con media igual a la reconstrucción \\( \\hat{x} \\) y varianza constante en forma matricial (por ejemplo, \\( \\sigma^2 I \\)). hay que recordar que minimizar el MSE es lo mismo que maximizar la log-verosimilitud de una distribución normal multivariada con media en \\( \\hat{x} \\). Elegir esa medida facilita la optimización, y aunque penaliza más fuerte los errores grandes, suele comportarse bien. Además se usa para imagenes RGB porque la imagenes tienen en cada canal valores continuos y el MSE sirve para predecir como una regresión y cuando da decimal 243,4 por ejemplo se aproxima para pasar a algo más discreto.\n",
+        "\n",
+        "  - Usando BCE (i.e., usando la entropía cruzada binaria entre la reconstrucción y la muestra original).\n",
+        "  > **Respuesta:**\n",
+        "BCE es:\n",
+        "$$\n",
+        "\\text{BCE}(x, \\hat{x}) = - \\sum_{i=1}^{N} \\left[ x_i \\log(\\hat{x}_i) + (1 - x_i) \\log(1 - \\hat{x}_i) \\right]\n",
+        "$$\n",
+        " y sigmoide:\n",
+        "\n",
+        " $$\n",
+        "\\sigma(z) = \\frac{1}{1 + e^{-z}}\n",
+        "$$\n",
+        "\n",
+        "Usar BCE es lo mismo que asumir que cada píxel sigue una distribución Bernoulli, porque la función de pérdida viene directamente de la log-verosimilitud de esa distribución. O sea, cada píxel puede tomar solo valores entre 0 y 1, representando la probabilidad de estar activado (1) o no (0).\n",
+        "\n",
+        "Para eso se usa una función de activación sigmoide al final del decoder, ya que permite que cada canal entregue una probabilidad. Igual, entremedio se pueden usar activaciones como ReLU, GELU, etc., depende de la arquitectura.\n",
+        "\n",
+        "Esta pérdida se usa para imageness de un solo canal, donde cada píxel puede ser por ejemploblanco o negro, o sea, solo dos valores. Por eso, la BCE sirve para reconstruir imágenes binarias. Eso sí, antes hay que normalizar la imagen (por ejemplo, de 0 a 255 a un rango entre [0, 1]).\n",
+        "\n",
+        "\n",
+        "  - Usando la distancia $L^1$ entre la reconstrucción y la muestra original.\n",
+        "  > **Respuesta:**\n",
+        "\n",
+        "  Si usamos L1, estamos asumiendo de forma implícita una distrubución Laplace centrada en la reconstrucción $\\hat{x}$, ya que minimizar el mae o sea el error absoluto medio es lo mismo que maximizar la log verosimilitud de esa distribución, además, como tiene errores absolutos y no cuadraticos entonces los outliers no se penalizan tanto, siendo más robusto, no obstante lo anterior, se utiliza más el MSE, porque ayuda a que converga mejor el training por derivadas suaves, pero MAE no se puede derivar en 0, osea no es suave en ese caso, por lo que  el gradiente se desestabiliza haciendo difícil que pueda converger bien, por lo que empíricamente se usa más el MSE porque converge mejor y además funciona bien aunque no sea taan robusto\n",
+        "\n",
+        "\n",
+        "- Complete la función `train_vae` que permite entrenar un VAE sobre un dataset de imágenes. Esta función debe contener las siguientes características:\n",
+        "  - Permitir usar distintas métricas para el cálculo del término de reconstrucción. Esto se indica en el parámetro `reconstruction_metric`.\n",
+        "  - Permitir disentangled representations usando la técnica propuesta en $\\beta$-VAE ([Higgins et al., 2017](https://openreview.net/forum?id=Sy2fzU9gl)). Esto se indica en el parámetro `beta`."
+      ],
+      "metadata": {
+        "id": "1b4YmzXAkWxs"
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Modelo interrumpido en la epoca 21"
+      ],
+      "metadata": {
+        "id": "kSo9HYWzdZFG"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "x_reconstruction = reconstruction(x_original, model)\n",
+        "show_images(torch.cat([x_original, x_reconstruction], dim=0), ncols=len(x_original))"
+      ],
+      "metadata": {
+        "id": "or0msV-VwhaN"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# latent_dim = 60\n",
+        "# reconstruction_metric = nn.MSELoss(reduction='sum')\n",
+        "# beta = 2\n",
+        "# n_epochs = 60\n",
+        "# model = VAE(latent_dim)\n",
+        "# optimizer = torch.optim.Adam(model.parameters())#, lr=1e-4)\n",
+        "# train_vae(model, dataloader, optimizer, reconstruction_metric, beta, n_epochs)"
+      ],
+      "metadata": {
+        "id": "3eiP3UEkCRie"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# x_reconstruction = reconstruction(x_original, model)\n",
+        "# show_images(torch.cat([x_original, x_reconstruction], dim=0), ncols=len(x_original))"
+      ],
+      "metadata": {
+        "id": "_cr5BDa0CU_P"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Guardamos el modelo para no tener que correrlo cada vez que se trabaje\n",
+        "torch.save(model, '/content/drive/MyDrive/vae_model_bce.pth')\n"
+      ],
+      "metadata": {
+        "id": "gsNGVzmJIkkl"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Cargo el modelo previamente entrenado\n",
+        "model = torch.load('/content/drive/MyDrive/vae_model_bce.pth', weights_only=False)\n",
+        "model.eval()"
+      ],
+      "metadata": {
+        "collapsed": true,
+        "id": "bIvSsUOKJGrO"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Generación de nuevas muestras\n",
+        "\n",
+        "\n",
+        "- Implemente la función `generate_samples` que genere muestras nuevas a partir del VAE."
+      ],
+      "metadata": {
+        "id": "OI7moJOAwxCE"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "def generate_samples(model, n_samples):\n",
+        "  z = torch.randn(n_samples, model.latent_dim)\n",
+        "  return model.decoder(z)"
+      ],
+      "metadata": {
+        "id": "Wtx7lRijICzF"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "samples = generate_samples(model, n_samples=20)\n",
+        "show_images(samples)"
+      ],
+      "metadata": {
+        "id": "RpW0LxXLIFD6"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Interpolación\n",
+        "\n",
+        "El objetivo de esta pregunta es ver la diferencia entre una interpolación en el espacio de pixeles y el espacio latente inducido por el VAE.\n",
+        "\n",
+        "#### Interpolación en el espacio de pixeles\n",
+        "\n",
+        "- Implemente la función `interpolate_pixels` que interpole linealmente 2 imágenes. Notar que esta función no hace uso del VAE."
+      ],
+      "metadata": {
+        "id": "-y-20fUIwcw7"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "def interpolate_pixels(x1, x2, steps=8):\n",
+        "    # x_alpha = (1 - alpha)x1 + alpha x2\n",
+        "\n",
+        "    x_interpolado = []\n",
+        "    for alpha in range(steps):\n",
+        "      x_alpha = (1 - alpha/steps) * x1 + alpha/steps * x2\n",
+        "      x_interpolado.append(x_alpha)\n",
+        "\n",
+        "    return torch.stack(x_interpolado)\n"
+      ],
+      "metadata": {
+        "id": "KmiN1CUxwslb"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "imgs, _ = next(iter(dataloader))\n",
+        "\n",
+        "x1, x2 = imgs[0:2]\n",
+        "pixel_interpolation = interpolate_pixels(x1, x2, steps=8)\n",
+        "\n",
+        "show_images(pixel_interpolation, ncols=len(pixel_interpolation))"
+      ],
+      "metadata": {
+        "id": "-2W_8RxSyH84"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "imgs, _ = next(iter(dataloader))\n",
+        "\n",
+        "x1, x2 = imgs[10:12]\n",
+        "pixel_interpolation = interpolate_pixels(x1, x2, steps=10)\n",
+        "\n",
+        "show_images(pixel_interpolation, ncols=len(pixel_interpolation))"
+      ],
+      "metadata": {
+        "id": "3aTFvSXsXff4"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "#### Interpolación en el espacio latente\n",
+        "\n",
+        "- Implemente la función `interpolate_latents` que interpole 2 imágenes en el espacio latente del VAE entrenado."
+      ],
+      "metadata": {
+        "id": "q0RBUA7Vwmi9"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "def interpolate_latents(x1, x2, model, steps=8):\n",
+        "  # z_aplha =  (1-alpha) * z1 + alpha * z2\n",
+        "\n",
+        "  # # Variables latentes\n",
+        "    z1, _ = model.encoder(x1.unsqueeze(0))\n",
+        "    z2, _ = model.encoder(x2.unsqueeze(0))\n",
+        "\n",
+        "    # Interpolacion\n",
+        "    x_interpolado = []\n",
+        "    for step in range (steps):\n",
+        "      # print(step)\n",
+        "      alpha = step/steps\n",
+        "      z_t = (1 - alpha) * z1 + alpha * z2\n",
+        "      x_t = model.decoder(z_t)\n",
+        "      x_interpolado.append(x_t.squeeze(0))\n",
+        "\n",
+        "    return torch.stack(x_interpolado)\n"
+      ],
+      "metadata": {
+        "id": "PHGoRWHDXwnD"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "imgs, _ = next(iter(dataloader))\n",
+        "\n",
+        "# Se interpolan las mismas imágenes usadas en interpolate_pixels:\n",
+        "pixel_interpolation = interpolate_latents(x1, x2, model)\n",
+        "\n",
+        "print('Imagen X1')\n",
+        "show_images(x1.unsqueeze(0), ncols=len(x1))\n",
+        "print('Imagen X2')\n",
+        "show_images(x2.unsqueeze(0), ncols=len(x2))\n",
+        "show_images(pixel_interpolation, ncols=len(pixel_interpolation))"
+      ],
+      "metadata": {
+        "id": "XZYsVM0mGt8f"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Aritmética en el espacio latente\n",
+        "\n",
+        "El objetivo de esta pregunta es realizar aritmética de atributos, donde los atributos, en este caso, vienen dados en la lista `_FACTORS_IN_ORDER` definida al comienzo.\n",
+        "\n",
+        "Recordar que, para un atributo dado, se puede calcular un centroide de dicho atributo, $z_{\\text{atributo}}\\in\\mathbb{R}^L$, promediando representaciones latentes de muestras que posean dicho atributo. Con esto, restando los centroides de dos atributos diferentes se obtiene un vector latente director, $z_{\\text{director}}\\in\\mathbb{R}^L$, el cual puede usarse para modificar atributos de una muestra $x\\in\\mathbb{R}^D$ mediante $x_\\lambda = \\text{decoder}(\\text{encoder}(x)+\\lambda z_\\text{director})$, donde $\\lambda>0$ es un parámetro de traslación.\n",
+        "\n",
+        "- Implemente la función `attribute_arithmetic`, la cual recibe 2 diccionarios (`source_attributes` y `target_attributes`) con los atributos que se usarán para definir el vector director. Este vector debe ser aplicado a una imagen dada (`test_img`) usando los ponderadores definidos en la lista `ponderators`."
+      ],
+      "metadata": {
+        "id": "Q1Spsr1fzEnE"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# _FACTORS_IN_ORDER = ['floor_hue', 'wall_hue', 'object_hue', 'scale', 'shape', 'orientation']"
+      ],
+      "metadata": {
+        "id": "gleKp2fhgIRZ"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "def attribute_arithmetic(model, dataset, source_attributes, target_attributes, test_img, ponderators):\n",
+        "  # centroide del atributo (promedio representaciones latentes)\n",
+        "  # z_director = centroide1 -centroide2\n",
+        "\n",
+        "  def match_attributes(label, attributes):\n",
+        "      factors_in_order = ['floor_hue', 'wall_hue', 'object_hue', 'scale',\n",
+        "                          'shape', 'orientation']\n",
+        "      for attr_name, attr_value in attributes.items():\n",
+        "        factor_idx = factors_in_order.index(attr_name)\n",
+        "\n",
+        "        # Comparo el valor de la label en el índice correspondiente\n",
+        "        if label[factor_idx] != attr_value:\n",
+        "          return False\n",
+        "      return True # retorna true si la etiqueta coincide en todas las cond.\n",
+        "\n",
+        "  z_mu_source, z_mu_target = [], []\n",
+        "\n",
+        "  model.eval()\n",
+        "  for x, label in dataset:\n",
+        "\n",
+        "    with torch.no_grad():\n",
+        "      z_mu, _ = model.encoder(x.unsqueeze(0))\n",
+        "\n",
+        "    z_mu = z_mu.squeeze(0).detach()\n",
+        "\n",
+        "    # Reviso si la muestra pertenece a las representaciones de target o source\n",
+        "    if match_attributes(label, target_attributes):\n",
+        "      z_mu_target.append(z_mu)\n",
+        "\n",
+        "    if match_attributes(label, source_attributes):\n",
+        "      z_mu_source.append(z_mu)\n",
+        "\n",
+        "  # --------------------------------------------------------------------------\n",
+        "  # Promedio las representaciones\n",
+        "  centroide_target = torch.stack(z_mu_target).mean(dim=0)\n",
+        "  centroide_source = torch.stack(z_mu_source).mean(dim=0)\n",
+        "\n",
+        "  # --------------------------------------------------------------------------\n",
+        "  # Calculo el vector director\n",
+        "  z_director = centroide_target - centroide_source\n",
+        "\n",
+        "  # --------------------------------------------------------------------------\n",
+        "  # Desplazo la imagen en la direccion del atributo\n",
+        "  # x_lambda = decoder(encoder(x) + lambda *z_director)\n",
+        "\n",
+        "  x_desplazada = [] # genero una lista vacía porque tengo una lista de ponderadores\n",
+        "\n",
+        "\n",
+        "  with torch.no_grad():\n",
+        "    z_original, _ = model.encoder(test_img.unsqueeze(0))\n",
+        "\n",
+        "  for step in ponderators:\n",
+        "    z_desplazado_step = z_original + step * z_director.unsqueeze(0)\n",
+        "\n",
+        "    with torch.no_grad():\n",
+        "      x_desplazado = model.decoder(z_desplazado_step)\n",
+        "    x_desplazada.append(x_desplazado.squeeze(0))\n",
+        "\n",
+        "  return torch.stack(x_desplazada)\n",
+        "\n"
+      ],
+      "metadata": {
+        "collapsed": true,
+        "id": "3kzny2xUbkPg"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Imagen de prueba:\n",
+        "test_img, test_label = dataset[30]\n",
+        "ponderators = torch.linspace(0, 1, 8).tolist()\n",
+        "\n",
+        "# Transformar forma original (cubo) -> esfera:\n",
+        "source_attributes = {'shape': test_label[4], 'object_hue': test_label[2]}\n",
+        "target_attributes = {'shape': 1, 'object_hue': 0.4} # Cambio la forma a cilindro y color del objeto a verde\n",
+        "\n",
+        "displaced_img = attribute_arithmetic(model, dataset, source_attributes,\n",
+        "                                     target_attributes, test_img, ponderators)\n",
+        "\n",
+        "print('Imagen Original')\n",
+        "show_images(test_img.unsqueeze(0), ncols=len(test_img))\n",
+        "print('Imagen Transformada')\n",
+        "show_images(displaced_img, ncols=len(displaced_img))"
+      ],
+      "metadata": {
+        "id": "E0SHL2rE-6Ti"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Es importante notar que si bien cambia el color de objeto, también está afectando a otros atributos como el color de la pared. Además, apenas se puede apreciar el cambio de forma del objeto, hecho que debería solucionarse aumentando elnúmero de épocas y escogiendo una cantidad correcta de dimensiones latentes."
+      ],
+      "metadata": {
+        "id": "TzN0sR5rEYS_"
+      }
+    }
+  ]
+}
